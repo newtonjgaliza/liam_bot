@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   liam:
     build: .
@@ -11,4 +9,4 @@ services:
       - ./data:/app/data
       - ./uploads:/app/uploads
     ports:
-      - "8080:8080"
+      - "8085:8080"
