@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  liam:
+    build: .
+    container_name: liam_bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    ports:
+      - "8080:8080"
