@@ -179,18 +179,19 @@ COMO VOCÊ DEVE AGIR:
     config = types.GenerateContentConfig(
         system_instruction=system_instruction,
         tools=LIAM_TOOLS,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         temperature=0.2,
     )
 
     try:
-        # 1ª Rodada: Modelo decide se responde direto ou chama ferramentas
-        response = client.models.generate_content(
+        # 1ª Rodada assíncrona: Modelo decide se responde direto ou chama ferramentas
+        response = await client.aio.models.generate_content(
             model=GEMINI_MODEL,
             contents=messages,
             config=config,
         )
 
-        # Loop de execução de Tools (caso o modelo precise chamar ferramentas)
+        # Loop de execução de Tools (quando o modelo aciona funções)
         max_tool_rounds = 4
         current_round = 0
 
@@ -210,10 +211,10 @@ COMO VOCÊ DEVE AGIR:
                     )
                 )
 
-            # Envia o resultado das tools de volta para o modelo gerar a resposta final
-            messages.append(types.Content(role="user", parts=tool_responses))
+            # Envia o resultado das tools de volta com role="tool"
+            messages.append(types.Content(role="tool", parts=tool_responses))
 
-            response = client.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=messages,
                 config=config,
@@ -289,7 +290,7 @@ Extraia as seguintes informações e retorne SEMPRE em formato JSON estrito:
             data=file_bytes,
             mime_type=mime_type,
         )
-        response = client.models.generate_content(
+        response = await client.aio.models.generate_content(
             model=GEMINI_MODEL,
             contents=[part, prompt],
             config=types.GenerateContentConfig(
