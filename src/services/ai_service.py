@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-from src.config import GEMINI_API_KEY, TIMEZONE
+from src.config import GEMINI_API_KEY, GEMINI_MODEL, TIMEZONE
 from src.services.tools import (
     tool_agendar_consulta,
     tool_listar_consultas,
@@ -185,7 +185,7 @@ COMO VOCÊ DEVE AGIR:
     try:
         # 1ª Rodada: Modelo decide se responde direto ou chama ferramentas
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=GEMINI_MODEL,
             contents=messages,
             config=config,
         )
@@ -214,7 +214,7 @@ COMO VOCÊ DEVE AGIR:
             messages.append(types.Content(role="user", parts=tool_responses))
 
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=GEMINI_MODEL,
                 contents=messages,
                 config=config,
             )
@@ -290,7 +290,7 @@ Extraia as seguintes informações e retorne SEMPRE em formato JSON estrito:
             mime_type=mime_type,
         )
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=GEMINI_MODEL,
             contents=[part, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
