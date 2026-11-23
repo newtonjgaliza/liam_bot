@@ -3,10 +3,15 @@ import logging
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from src.config import GEMINI_API_KEY, TIMEZONE
+from src.services.tools import (
+    tool_agendar_consulta,
+    tool_listar_consultas,
+    tool_buscar_historico_medico,
+    tool_cancelar_consulta,
+)
 
 logger = logging.getLogger(__name__)
 
-# Tenta carregar o SDK moderno do Gemini (google-genai)
 try:
     from google import genai
     from google.genai import types
@@ -22,78 +27,203 @@ def get_gemini_client():
     return genai.Client(api_key=GEMINI_API_KEY)
 
 
-async def analyze_message_intent(message_text: str, user_name: str) -> Dict[str, Any]:
+# Definição das Tools (Ferramentas) para o Gemini
+LIAM_TOOLS = [
+    types.Tool(
+        function_declarations=[
+            types.FunctionDeclaration(
+                name="agendar_consulta",
+                description="Agenda uma nova consulta médica, retorno ou exame no banco de dados para ativar os lembretes automáticos.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "medico": types.Schema(type=types.Type.STRING, description="Nome do médico, dentista ou profissional de saúde (ex: Dra. Flávia)"),
+                        "data": types.Schema(type=types.Type.STRING, description="Data da consulta no formato estrito YYYY-MM-DD"),
+                        "paciente": types.Schema(type=types.Type.STRING, description="Nome do paciente (se não especificado, deixar vazio ou 'Geral')"),
+                        "horario": types.Schema(type=types.Type.STRING, description="Horário no formato HH:MM (ex: 14:30), ou null se não informado"),
+                        "especialidade": types.Schema(type=types.Type.STRING, description="Especialidade médica (ex: Cardiologista, Nutricionista, Pediatra)"),
+                        "local": types.Schema(type=types.Type.STRING, description="Local da consulta, hospital ou consultório"),
+                        "observacoes": types.Schema(type=types.Type.STRING, description="Observações, recomendações de jejum ou preparo"),
+                    },
+                    required=["medico", "data"],
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="listar_consultas",
+                description="Consulta a lista de consultas e exames agendados no sistema.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "paciente": types.Schema(type=types.Type.STRING, description="Filtra por nome do paciente se solicitado"),
+                        "medico": types.Schema(type=types.Type.STRING, description="Filtra por nome do médico se solicitado"),
+                        "a_partir_de_hoje": types.Schema(type=types.Type.BOOLEAN, description="Se True, busca consultas a partir de hoje. Padrão True"),
+                    },
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="buscar_historico_medico",
+                description="Pesquisa no histórico por receitas, medicamentos passados, dosagens, frequências, dietas e exames.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "termo_busca": types.Schema(type=types.Type.STRING, description="Nome do remédio, sintoma, orientação ou tipo de dieta"),
+                        "medico": types.Schema(type=types.Type.STRING, description="Nome do médico que passou a receita ou consulta"),
+                        "paciente": types.Schema(type=types.Type.STRING, description="Nome do paciente"),
+                    },
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="cancelar_consulta",
+                description="Cancela uma consulta agendada pelo seu ID numérico.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "id_consulta": types.Schema(type=types.Type.INTEGER, description="ID numérico da consulta a ser cancelada"),
+                    },
+                    required=["id_consulta"],
+                ),
+            ),
+        ]
+    )
+]
+
+
+async def execute_tool_call(call: Any, telegram_chat_id: int) -> Dict[str, Any]:
+    """Executa a função correspondente à chamada da Tool do modelo."""
+    fn_name = call.name
+    fn_args = call.args or {}
+
+    logger.info(f"🛠️ Executando Tool: {fn_name} com argumentos: {fn_args}")
+
+    if fn_name == "agendar_consulta":
+        return await tool_agendar_consulta(
+            medico=fn_args.get("medico", "Médico"),
+            data=fn_args.get("data"),
+            paciente=fn_args.get("paciente"),
+            horario=fn_args.get("horario"),
+            especialidade=fn_args.get("especialidade"),
+            local=fn_args.get("local"),
+            observacoes=fn_args.get("observacoes"),
+            telegram_chat_id=telegram_chat_id,
+        )
+    elif fn_name == "listar_consultas":
+        return {
+            "consultas": await tool_listar_consultas(
+                paciente=fn_args.get("paciente"),
+                medico=fn_args.get("medico"),
+                a_partir_de_hoje=fn_args.get("a_partir_de_hoje", True),
+            )
+        }
+    elif fn_name == "buscar_historico_medico":
+        return await tool_buscar_historico_medico(
+            termo_busca=fn_args.get("termo_busca"),
+            medico=fn_args.get("medico"),
+            paciente=fn_args.get("paciente"),
+        )
+    elif fn_name == "cancelar_consulta":
+        return await tool_cancelar_consulta(
+            id_consulta=int(fn_args.get("id_consulta"))
+        )
+
+    return {"erro": f"Ferramenta {fn_name} não encontrada."}
+
+
+async def chat_with_agent(
+    user_message: str,
+    user_name: str,
+    telegram_chat_id: int,
+) -> str:
     """
-    Analisa a mensagem de texto do usuário para descobrir a intenção:
-    - Agendar consulta (INTENT_APPOINTMENT)
-    - Pergunta sobre histórico médico/remédios/dietas (INTENT_QUERY)
-    - Conversa geral / outros (INTENT_CHAT)
+    Agente completo do Liam:
+    Processa a mensagem com acesso a Tools para consultar, agendar e pesquisar no histórico.
     """
     client = get_gemini_client()
     now = datetime.now(TIMEZONE)
-    current_date_str = now.strftime("%Y-%m-%d (%A)")
+    current_date_str = now.strftime("%Y-%m-%d (%A, %d de %B de %Y)")
+    current_time_str = now.strftime("%H:%M")
     current_year = now.year
 
     if not client:
-        # Se a chave de API não foi configurada ainda, faz um fallback básico
-        lower = message_text.lower()
-        if any(w in lower for w in ["consulta", "médico", "medico", "doutor", "dra", "dr.", "marcar", "agendar"]):
-            return {
-                "intent": "INTENT_CHAT",
-                "reply": "Recebi sua mensagem sobre médico/consulta! Para que eu possa entender datas e extrair os detalhes automaticamente, lembre-se de configurar a `GEMINI_API_KEY` no arquivo `.env`."
-            }
-        return {
-            "intent": "INTENT_CHAT",
-            "reply": "Olá! Eu sou o Liam. Para ativar minha inteligência completa de leitura de receitas e consultas, configure a `GEMINI_API_KEY`."
-        }
+        return (
+            "Olá! Eu sou o Liam. Para que eu possa usar minhas ferramentas de agendamento e memória, "
+            "certifique-se de configurar a `GEMINI_API_KEY` no arquivo `.env`."
+        )
 
-    prompt = f"""
+    system_instruction = f"""
 Você é o Liam, o assistente médico e de saúde pessoal de um casal carinhoso.
-Data atual de referência: {current_date_str}, ano {current_year}.
-Nome do usuário que enviou a mensagem: {user_name}.
+Você tem acesso a FERRAMENTAS (Tools) para gerenciar consultas e consultar o histórico de receitas e dietas.
 
-Analise a mensagem a seguir do usuário:
-"{message_text}"
+Informações temporais de referência:
+- Data atual: {current_date_str}
+- Horário atual: {current_time_str}
+- Ano atual: {current_year}
+- Usuário que está falando agora: {user_name}
 
-Classifique a intenção do usuário em UMA das 3 categorias:
-1. "APPOINTMENT": O usuário está informando ou pedindo para anotar uma consulta médica, exame, retorno ou dentista.
-2. "QUERY": O usuário está fazendo uma pergunta sobre remédios passados, consultas passadas, dietas, laudos ou histórico de saúde (ex: "quais remédios dra flavia passou", "quando é minha consulta", "qual a dieta?").
-3. "CHAT": Conversa casual, saudação, agradecimento ou outro assunto.
-
-Retorne SEMPRE em formato JSON estrito, sem crases adicionais ou blocos de código além do JSON puro:
-{{
-  "intent": "APPOINTMENT" | "QUERY" | "CHAT",
-  "appointment_details": {{
-      "patient_name": "Nome da pessoa (ex: {user_name}, esposa, etc, ou 'Não especificado')",
-      "doctor_name": "Nome do médico/doutor se mencionado ou 'Médico'",
-      "specialty": "Especialidade médica (ex: Cardiologista, Dermatologista, Clínico Geral, Dentista)",
-      "date": "YYYY-MM-DD (considere o ano atual {current_year} ou próximo ano se o mês já passou)",
-      "time": "HH:MM ou null se não informado",
-      "location": "Local ou hospital se mencionado ou null",
-      "notes": "Observações adicionais ou preparos mencionados"
-  }},
-  "query_subject": "Resumo do que está sendo perguntado caso seja QUERY",
-  "chat_reply": "Resposta acolhedora e direta caso seja CHAT"
-}}
+COMO VOCÊ DEVE AGIR:
+1. Sempre que o usuário mencionar uma consulta (marcar, agendar, avisar que tem consulta dia X), use a tool `agendar_consulta`.
+   - Se o usuário disser apenas o dia e o mês (ex: "dia 12 de dezembro"), deduza o ano correto considerando o momento atual ({current_year} ou próximo ano se o mês já passou).
+   - Se o horário não foi falado, deixe o campo de horário como null ou pergunte com carinho depois de agendar.
+   - Sempre avise que os lembretes automáticos estão ativados (na véspera, no dia pela manhã e 2h antes).
+2. Sempre que perguntarem sobre remédios, receitas passadas, dietas ou recomendações médicas (ex: "quais remédios dra flavia passou", "o que a nutricionista disse"), use a tool `buscar_historico_medico`.
+3. Sempre que perguntarem sobre compromissos ou consultas futuras ("quando é minha consulta", "quais consultas temos esse mês"), use a tool `listar_consultas`.
+4. Seja sempre atencioso, empático, claro e fale em português com formatação limpa (use negrito e emojis quando apropriado).
 """
 
+    messages = [
+        types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=user_message)]
+        )
+    ]
+
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        tools=LIAM_TOOLS,
+        temperature=0.2,
+    )
+
     try:
+        # 1ª Rodada: Modelo decide se responde direto ou chama ferramentas
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.1,
-            )
+            contents=messages,
+            config=config,
         )
-        data = json.loads(response.text.strip())
-        return data
+
+        # Loop de execução de Tools (caso o modelo precise chamar ferramentas)
+        max_tool_rounds = 4
+        current_round = 0
+
+        while response.function_calls and current_round < max_tool_rounds:
+            current_round += 1
+            tool_responses = []
+
+            # Adiciona a resposta com as chamadas de função ao histórico
+            messages.append(response.candidates[0].content)
+
+            for call in response.function_calls:
+                tool_result = await execute_tool_call(call, telegram_chat_id)
+                tool_responses.append(
+                    types.Part.from_function_response(
+                        name=call.name,
+                        response={"result": tool_result}
+                    )
+                )
+
+            # Envia o resultado das tools de volta para o modelo gerar a resposta final
+            messages.append(types.Content(role="user", parts=tool_responses))
+
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=messages,
+                config=config,
+            )
+
+        return response.text or "Entendido! Processamento concluído."
+
     except Exception as e:
-        logger.error(f"Erro ao analisar intenção com Gemini: {e}")
-        return {
-            "intent": "CHAT",
-            "chat_reply": f"Desculpe, tive um contratempo ao processar sua mensagem: {str(e)}"
-        }
+        logger.error(f"Erro no agente Liam: {e}", exc_info=True)
+        return f"Desculpe, tive um imprevisto ao processar: {str(e)}"
 
 
 async def process_medical_document(
@@ -116,7 +246,7 @@ async def process_medical_document(
             "patient_name": user_name,
             "doctor_name": "Não identificado",
             "doc_date": current_date_str,
-            "summary": "Documento recebido e armazenado. (Ative a GEMINI_API_KEY para extração automática)",
+            "summary": "Documento recebido e armazenado.",
             "medications": []
         }
 
@@ -169,84 +299,3 @@ Extraia as seguintes informações em formato JSON estrito:
             "summary": f"Não consegui ler todos os detalhes do arquivo automaticamente. Erro: {str(e)}",
             "medications": []
         }
-
-
-async def answer_health_query(
-    query: str,
-    user_name: str,
-    recent_documents: List[Any],
-    upcoming_appointments: List[Any],
-    medications: List[Any]
-) -> str:
-    """
-    Responde perguntas do usuário baseando-se no histórico de documentos,
-    remédios cadastrados e consultas agendadas.
-    """
-    client = get_gemini_client()
-    now = datetime.now(TIMEZONE)
-    current_date_str = now.strftime("%d/%m/%Y às %H:%M")
-
-    if not client:
-        return "Para responder com base no seu histórico médico, preciso que configure a `GEMINI_API_KEY` no arquivo `.env`."
-
-    # Prepara o contexto
-    docs_context = []
-    for d in recent_documents:
-        docs_context.append(
-            f"- Tipo: {d.doc_type.upper()} | Paciente: {d.patient_name} | Médico: {d.doctor_name or 'N/I'} | Data: {d.doc_date}\n  Resumo: {d.summary}"
-        )
-
-    meds_context = []
-    for m in medications:
-        meds_context.append(
-            f"- Remédio: {m.name} | Paciente: {m.patient_name} | Médico: {m.doctor_name or 'N/I'} | Data: {m.prescription_date}\n  Dose: {m.dosage or 'N/I'} | Frequência: {m.frequency or 'N/I'} | Instruções: {m.instructions or 'N/I'}"
-        )
-
-    apts_context = []
-    for a in upcoming_appointments:
-        time_str = a.appointment_time.strftime("%H:%M") if a.appointment_time else "Horário a confirmar"
-        apts_context.append(
-            f"- Consulta com {a.doctor_name} ({a.specialty or 'Especialidade n/i'}) para {a.patient_name} em {a.appointment_date.strftime('%d/%m/%Y')} às {time_str}. Obs: {a.notes or 'Nenhuma'}"
-        )
-
-    context_str = f"""
-=== CONSULTAS REGISTRADAS ===
-{chr(10).join(apts_context) if apts_context else "Nenhuma consulta futura registrada."}
-
-=== MEDICAMENTOS RECEITADOS NO HISTÓRICO ===
-{chr(10).join(meds_context) if meds_context else "Nenhum medicamento registrado ainda."}
-
-=== DOCUMENTOS E RECEITAS CADASTRADAS ===
-{chr(10).join(docs_context) if docs_context else "Nenhum documento salvo ainda."}
-"""
-
-    prompt = f"""
-Você é o Liam, o assistente médico atencioso e dedicado da família.
-Momento atual: {current_date_str}.
-Quem está perguntando: {user_name}.
-
-Pergunta do usuário:
-"{query}"
-
-Abaixo está o histórico médico real cadastrado no seu banco de dados:
-{context_str}
-
-Instruções para responder:
-1. Responda de forma clara, amigável, precisa e empática, citando médicos, datas e dosagens quando disponíveis no histórico.
-2. Diferencie claramente se a informação é do usuário ou da esposa dele quando houver essa indicação.
-3. Se a informação não constar nos dados acima, seja sincero e informe educadamente que não encontrou aquele registro ou receita no histórico cadastrado até o momento.
-4. Lembre-se: você é um assistente de organização de saúde e não substitui uma avaliação médica direta.
-"""
-
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-            )
-        )
-        return response.text.strip()
-    except Exception as e:
-        logger.error(f"Erro ao responder pergunta médica: {e}")
-        return f"Tive uma falha ao consultar os registros: {str(e)}"
