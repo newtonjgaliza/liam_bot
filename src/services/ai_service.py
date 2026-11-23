@@ -230,11 +230,13 @@ async def process_medical_document(
     file_bytes: bytes,
     mime_type: str,
     file_name: str,
-    user_name: str
+    user_name: str,
+    user_caption: str = "",
+    extracted_text: str = "",
 ) -> Dict[str, Any]:
     """
-    Processa um arquivo enviado (PDF ou imagem de receita, exame ou dieta)
-    e extrai estruturadamente as informações médicas.
+    Processa um arquivo enviado (PDF completo, foto de receita manuscrita/impressa,
+    foto de caixa de remédio, dieta ou pedido de exame) e extrai estruturadamente as informações médicas.
     """
     client = get_gemini_client()
     now = datetime.now(TIMEZONE)
@@ -246,29 +248,37 @@ async def process_medical_document(
             "patient_name": user_name,
             "doctor_name": "Não identificado",
             "doc_date": current_date_str,
-            "summary": "Documento recebido e armazenado.",
+            "summary": "Documento recebido e armazenado. Configure a GEMINI_API_KEY para extração completa.",
             "medications": []
         }
 
-    prompt = f"""
-Você é o Liam, assistente especialista em ler e catalogar documentos de saúde (receitas médicas, exames laboratoriais, pedidos médicos, dietas e laudos).
-Data atual de referência: {current_date_str}.
-Usuário que enviou: {user_name}.
+    caption_context = f"\nLegenda/Comentário enviado pelo usuário junto com o arquivo: '{user_caption}'" if user_caption else ""
+    text_context = f"\nTexto pré-extraído do PDF digital:\n{extracted_text[:3000]}" if extracted_text else ""
 
-Analise o documento anexado com máxima precisão.
-Extraia as seguintes informações em formato JSON estrito:
+    prompt = f"""
+Você é o Liam, o assistente médico especialista em visão computacional e leitura minuciosa de documentos de saúde da família.
+Você deve ser capaz de ler e interpretar com extrema precisão:
+1. Arquivos em PDF de receitas médicas, atestados, planos alimentares (dietas) e laudos de exames laboratoriais.
+2. Fotos de receitas (mesmo com letra manuscrita de médico difícil de ler ou carimbo médico).
+3. Fotos de caixas/embalagens de remédios, cartelas, bulas ou fotos de mensagens com indicação de remédios.
+
+Data atual de referência: {current_date_str}.
+Usuário que enviou o arquivo: {user_name}.{caption_context}{text_context}
+
+Analise a imagem/documento anexado com máxima dedicação.
+Extraia as seguintes informações e retorne SEMPRE em formato JSON estrito:
 {{
-  "doc_type": "receita" | "exame" | "dieta" | "laudo" | "atestado" | "outro",
-  "patient_name": "Nome do paciente identificado no documento (ou '{user_name}' se não encontrado)",
-  "doctor_name": "Nome completo do médico/nutricionista com Dr./Dra. se houver",
-  "doc_date": "YYYY-MM-DD da data da emissão do documento (ou null se ilegível)",
-  "summary": "Resumo claro, organizado e amigável em português dos principais pontos do documento, orientações, datas de retorno ou cuidados",
+  "doc_type": "receita" | "exame" | "dieta" | "laudo" | "atestado" | "foto_remedio" | "indicacao" | "outro",
+  "patient_name": "Nome da pessoa a quem o documento ou remédio se destina (identifique no documento ou na legenda se é {user_name} ou esposa; caso não conste, use '{user_name}')",
+  "doctor_name": "Nome completo do médico/nutricionista/profissional com título (ex: Dra. Flávia) ou 'Não informado'",
+  "doc_date": "YYYY-MM-DD da data da prescrição/exame (se ilegível ou for apenas foto de remédio, use '{current_date_str}')",
+  "summary": "Resumo completo, acolhedor e muito claro em português do que se trata o documento/foto, para que serve o remédio identificado, horários e orientações principais",
   "medications": [
     {{
-      "name": "Nome do medicamento",
-      "dosage": "Dosagem (ex: 50mg, 1 gota/kg, 1 comprimido)",
-      "frequency": "Frequência (ex: 8 em 8 horas, 1x ao dia pela manhã)",
-      "instructions": "Recomendações de uso (ex: tomar após o almoço, por 7 dias)"
+      "name": "Nome comercial ou princípio ativo do medicamento ou suplemento",
+      "dosage": "Dosagem ou concentração (ex: 50mg, 1 comprimido, 20 gotas, 1 scoop)",
+      "frequency": "Frequência de uso (ex: 8 em 8 horas, 1x ao dia pela manhã, de 12 em 12h após as refeições)",
+      "instructions": "Como usar, tempo de tratamento ou recomendações especiais (ex: tomar com água em jejum, por 14 dias)"
     }}
   ]
 }}
