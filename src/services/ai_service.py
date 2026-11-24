@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -128,6 +129,51 @@ async def execute_tool_call(call: Any, telegram_chat_id: int) -> Dict[str, Any]:
     return {"erro": f"Ferramenta {fn_name} não encontrada."}
 
 
+async def generate_content_with_retry(
+    client,
+    model: str,
+    contents: Any,
+    config: Any,
+    max_retries: int = 3,
+) -> Any:
+    """
+    Executa a chamada assíncrona ao Gemini com retry automático em caso de 503 (sobrecarga temporária)
+    e fallback para modelos alternativos se necessário.
+    """
+    models_to_try = [model, "gemini-2.0-flash", "gemini-1.5-flash"]
+    # Remove duplicados mantendo a ordem
+    unique_models = list(dict.fromkeys(models_to_try))
+
+    last_error = None
+    for target_model in unique_models:
+        for attempt in range(max_retries):
+            try:
+                response = await client.aio.models.generate_content(
+                    model=target_model,
+                    contents=contents,
+                    config=config,
+                )
+                return response
+            except Exception as e:
+                err_str = str(e).lower()
+                last_error = e
+                # Erro 503 (serviço indisponível temporário) ou 429 (rate limit)
+                if any(k in err_str for k in ["503", "unavailable", "429", "resource_exhausted", "high demand"]):
+                    wait_time = (attempt + 1) * 1.5
+                    logger.warning(
+                        f"⚠️ Google API ocupada ({target_model} retornou 503/429). "
+                        f"Tentativa {attempt + 1}/{max_retries}. Aguardando {wait_time}s..."
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    # Se for outro erro (ex: 404 de modelo não encontrado), tenta o próximo modelo da lista
+                    logger.warning(f"Erro no modelo {target_model}: {e}. Tentando fallback...")
+                    break
+
+    raise last_error
+
+
 async def chat_with_agent(
     user_message: str,
     user_name: str,
@@ -185,7 +231,8 @@ COMO VOCÊ DEVE AGIR:
 
     try:
         # 1ª Rodada assíncrona: Modelo decide se responde direto ou chama ferramentas
-        response = await client.aio.models.generate_content(
+        response = await generate_content_with_retry(
+            client=client,
             model=GEMINI_MODEL,
             contents=messages,
             config=config,
@@ -214,7 +261,8 @@ COMO VOCÊ DEVE AGIR:
             # Envia o resultado das tools de volta com role="tool"
             messages.append(types.Content(role="tool", parts=tool_responses))
 
-            response = await client.aio.models.generate_content(
+            response = await generate_content_with_retry(
+                client=client,
                 model=GEMINI_MODEL,
                 contents=messages,
                 config=config,
@@ -224,6 +272,9 @@ COMO VOCÊ DEVE AGIR:
 
     except Exception as e:
         logger.error(f"Erro no agente Liam: {e}", exc_info=True)
+        err_msg = str(e)
+        if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg.lower():
+            return "Os servidores da Google estão com alta demanda temporária neste instante. Por favor, tente enviar sua mensagem novamente em alguns segundos! 😊"
         return f"Desculpe, tive um imprevisto ao processar: {str(e)}"
 
 
@@ -290,7 +341,8 @@ Extraia as seguintes informações e retorne SEMPRE em formato JSON estrito:
             data=file_bytes,
             mime_type=mime_type,
         )
-        response = await client.aio.models.generate_content(
+        response = await generate_content_with_retry(
+            client=client,
             model=GEMINI_MODEL,
             contents=[part, prompt],
             config=types.GenerateContentConfig(
