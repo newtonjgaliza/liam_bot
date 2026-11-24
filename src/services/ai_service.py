@@ -228,36 +228,50 @@ COMO VOCÊ DEVE AGIR:
         temperature=0.2,
     )
 
+    models_to_try = [GEMINI_MODEL, "gemini-3-flash-preview"]
+    unique_models = list(dict.fromkeys(models_to_try))
+    last_error = None
+
     try:
-        # Usa sessão de chat nativa do SDK
-        chat = client.aio.chats.create(
-            model=GEMINI_MODEL,
-            config=config,
-        )
-
-        response = await send_chat_message_with_retry(chat, user_message)
-
-        # Loop de execução de Tools (quando o modelo aciona funções)
-        max_tool_rounds = 4
-        current_round = 0
-
-        while response.function_calls and current_round < max_tool_rounds:
-            current_round += 1
-            tool_responses = []
-
-            for call in response.function_calls:
-                tool_result = await execute_tool_call(call, telegram_chat_id)
-                tool_responses.append(
-                    types.Part.from_function_response(
-                        name=call.name,
-                        response={"result": tool_result}
-                    )
+        for model_name in unique_models:
+            try:
+                # Usa sessão de chat nativa do SDK
+                chat = client.aio.chats.create(
+                    model=model_name,
+                    config=config,
                 )
 
-            # Envia as respostas das tools de volta para a sessão do chat
-            response = await send_chat_message_with_retry(chat, tool_responses)
+                response = await send_chat_message_with_retry(chat, user_message)
 
-        return response.text or "Entendido! Compromisso anotado com sucesso."
+                # Loop de execução de Tools (quando o modelo aciona funções)
+                max_tool_rounds = 4
+                current_round = 0
+
+                while response.function_calls and current_round < max_tool_rounds:
+                    current_round += 1
+                    tool_responses = []
+
+                    for call in response.function_calls:
+                        tool_result = await execute_tool_call(call, telegram_chat_id)
+                        tool_responses.append(
+                            types.Part.from_function_response(
+                                name=call.name,
+                                response={"result": tool_result}
+                            )
+                        )
+
+                    # Envia as respostas das tools de volta para a sessão do chat
+                    response = await send_chat_message_with_retry(chat, tool_responses)
+
+                return response.text or "Entendido! Compromisso anotado com sucesso."
+
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Tentativa com modelo {model_name} falhou: {e}. Tentando alternativa...")
+                continue
+
+        if last_error:
+            raise last_error
 
     except Exception as e:
         logger.error(f"Erro no agente Liam: {e}", exc_info=True)
