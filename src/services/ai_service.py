@@ -34,19 +34,19 @@ LIAM_TOOLS = [
         function_declarations=[
             types.FunctionDeclaration(
                 name="agendar_consulta",
-                description="Agenda uma nova consulta médica, retorno ou exame no banco de dados para ativar os lembretes automáticos.",
+                description="Agenda uma nova consulta médica, exame ou retorno no banco de dados para ativar os lembretes automáticos.",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
-                        "medico": types.Schema(type=types.Type.STRING, description="Nome do médico, dentista ou profissional de saúde (ex: Dra. Flávia)"),
-                        "data": types.Schema(type=types.Type.STRING, description="Data da consulta no formato estrito YYYY-MM-DD"),
+                        "medico": types.Schema(type=types.Type.STRING, description="Nome do médico, dentista, clínica ou tipo de exame (ex: Dra. Flávia, Ecomedical, Exame de esteira)"),
+                        "data": types.Schema(type=types.Type.STRING, description="Data da consulta ou exame no formato estrito YYYY-MM-DD"),
                         "paciente": types.Schema(type=types.Type.STRING, description="Nome do paciente (se não especificado, deixar vazio ou 'Geral')"),
-                        "horario": types.Schema(type=types.Type.STRING, description="Horário no formato HH:MM (ex: 14:30), ou null se não informado"),
-                        "especialidade": types.Schema(type=types.Type.STRING, description="Especialidade médica (ex: Cardiologista, Nutricionista, Pediatra)"),
-                        "local": types.Schema(type=types.Type.STRING, description="Local da consulta, hospital ou consultório"),
+                        "horario": types.Schema(type=types.Type.STRING, description="Horário no formato HH:MM (ex: 14:15), ou null se não informado"),
+                        "especialidade": types.Schema(type=types.Type.STRING, description="Especialidade médica ou procedimento (ex: Exame de esteira, Cardiologia)"),
+                        "local": types.Schema(type=types.Type.STRING, description="Local da consulta, hospital ou clínica (ex: Ecomedical)"),
                         "observacoes": types.Schema(type=types.Type.STRING, description="Observações, recomendações de jejum ou preparo"),
                     },
-                    required=["medico", "data"],
+                    required=["data"],
                 ),
             ),
             types.FunctionDeclaration(
@@ -97,8 +97,9 @@ async def execute_tool_call(call: Any, telegram_chat_id: int) -> Dict[str, Any]:
     logger.info(f"🛠️ Executando Tool: {fn_name} com argumentos: {fn_args}")
 
     if fn_name == "agendar_consulta":
+        medico_val = fn_args.get("medico") or fn_args.get("especialidade") or fn_args.get("local") or "Consulta/Exame"
         return await tool_agendar_consulta(
-            medico=fn_args.get("medico", "Médico"),
+            medico=medico_val,
             data=fn_args.get("data"),
             paciente=fn_args.get("paciente"),
             horario=fn_args.get("horario"),
@@ -137,41 +138,44 @@ async def generate_content_with_retry(
     max_retries: int = 3,
 ) -> Any:
     """
-    Executa a chamada assíncrona ao Gemini com retry automático em caso de 503 (sobrecarga temporária)
-    e fallback para modelos alternativos se necessário.
+    Executa a chamada assíncrona ao Gemini com retry automático em caso de 503 (sobrecarga temporária).
     """
-    models_to_try = [model, "gemini-2.0-flash", "gemini-1.5-flash"]
-    # Remove duplicados mantendo a ordem
-    unique_models = list(dict.fromkeys(models_to_try))
-
-    last_error = None
-    for target_model in unique_models:
-        for attempt in range(max_retries):
-            try:
-                response = await client.aio.models.generate_content(
-                    model=target_model,
-                    contents=contents,
-                    config=config,
+    for attempt in range(max_retries):
+        try:
+            return await client.aio.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(k in err_str for k in ["503", "unavailable", "429", "resource_exhausted", "high demand"]):
+                wait_time = (attempt + 1) * 1.5
+                logger.warning(
+                    f"⚠️ Google API ocupada (503/429). Tentativa {attempt + 1}/{max_retries}. "
+                    f"Aguardando {wait_time}s..."
                 )
-                return response
-            except Exception as e:
-                err_str = str(e).lower()
-                last_error = e
-                # Erro 503 (serviço indisponível temporário) ou 429 (rate limit)
-                if any(k in err_str for k in ["503", "unavailable", "429", "resource_exhausted", "high demand"]):
-                    wait_time = (attempt + 1) * 1.5
-                    logger.warning(
-                        f"⚠️ Google API ocupada ({target_model} retornou 503/429). "
-                        f"Tentativa {attempt + 1}/{max_retries}. Aguardando {wait_time}s..."
-                    )
-                    await asyncio.sleep(wait_time)
-                    continue
-                else:
-                    # Se for outro erro (ex: 404 de modelo não encontrado), tenta o próximo modelo da lista
-                    logger.warning(f"Erro no modelo {target_model}: {e}. Tentando fallback...")
-                    break
+                await asyncio.sleep(wait_time)
+                continue
+            raise e
 
-    raise last_error
+
+async def send_chat_message_with_retry(chat, message: Any, max_retries: int = 3) -> Any:
+    """Envia mensagem no chat assíncrono com retry automático em caso de 503 temporário."""
+    for attempt in range(max_retries):
+        try:
+            return await chat.send_message(message)
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(k in err_str for k in ["503", "unavailable", "429", "resource_exhausted", "high demand"]):
+                wait_time = (attempt + 1) * 1.5
+                logger.warning(
+                    f"⚠️ Google API ocupada (503/429). Tentativa {attempt + 1}/{max_retries}. "
+                    f"Aguardando {wait_time}s..."
+                )
+                await asyncio.sleep(wait_time)
+                continue
+            raise e
 
 
 async def chat_with_agent(
@@ -181,7 +185,8 @@ async def chat_with_agent(
 ) -> str:
     """
     Agente completo do Liam:
-    Processa a mensagem com acesso a Tools para consultar, agendar e pesquisar no histórico.
+    Processa a mensagem com acesso a Tools para consultar, agendar e pesquisar no histórico
+    usando sessões de Chat nativas.
     """
     client = get_gemini_client()
     now = datetime.now(TIMEZONE)
@@ -197,7 +202,7 @@ async def chat_with_agent(
 
     system_instruction = f"""
 Você é o Liam, o assistente médico e de saúde pessoal de um casal carinhoso.
-Você tem acesso a FERRAMENTAS (Tools) para gerenciar consultas e consultar o histórico de receitas e dietas.
+Você tem acesso a FERRAMENTAS (Tools) para gerenciar consultas, exames e consultar o histórico de receitas e dietas.
 
 Informações temporais de referência:
 - Data atual: {current_date_str}
@@ -206,21 +211,15 @@ Informações temporais de referência:
 - Usuário que está falando agora: {user_name}
 
 COMO VOCÊ DEVE AGIR:
-1. Sempre que o usuário mencionar uma consulta (marcar, agendar, avisar que tem consulta dia X), use a tool `agendar_consulta`.
+1. Sempre que o usuário mencionar uma consulta ou exame (marcar, agendar, avisar que tem compromisso dia X ou amanhã), use a tool `agendar_consulta`.
+   - Se o usuário disser "amanhã", calcule a data de amanhã a partir da data atual ({current_date_str}).
    - Se o usuário disser apenas o dia e o mês (ex: "dia 12 de dezembro"), deduza o ano correto considerando o momento atual ({current_year} ou próximo ano se o mês já passou).
-   - Se o horário não foi falado, deixe o campo de horário como null ou pergunte com carinho depois de agendar.
+   - Se não houver nome de médico (como em exames laboratoriais, de imagem ou esteira), use o nome do exame ou da clínica.
    - Sempre avise que os lembretes automáticos estão ativados (na véspera, no dia pela manhã e 2h antes).
 2. Sempre que perguntarem sobre remédios, receitas passadas, dietas ou recomendações médicas (ex: "quais remédios dra flavia passou", "o que a nutricionista disse"), use a tool `buscar_historico_medico`.
 3. Sempre que perguntarem sobre compromissos ou consultas futuras ("quando é minha consulta", "quais consultas temos esse mês"), use a tool `listar_consultas`.
 4. Seja sempre atencioso, empático, claro e fale em português com formatação limpa (use negrito e emojis quando apropriado).
 """
-
-    messages = [
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=user_message)]
-        )
-    ]
 
     config = types.GenerateContentConfig(
         system_instruction=system_instruction,
@@ -230,13 +229,13 @@ COMO VOCÊ DEVE AGIR:
     )
 
     try:
-        # 1ª Rodada assíncrona: Modelo decide se responde direto ou chama ferramentas
-        response = await generate_content_with_retry(
-            client=client,
+        # Usa sessão de chat nativa do SDK
+        chat = client.aio.chats.create(
             model=GEMINI_MODEL,
-            contents=messages,
             config=config,
         )
+
+        response = await send_chat_message_with_retry(chat, user_message)
 
         # Loop de execução de Tools (quando o modelo aciona funções)
         max_tool_rounds = 4
@@ -245,9 +244,6 @@ COMO VOCÊ DEVE AGIR:
         while response.function_calls and current_round < max_tool_rounds:
             current_round += 1
             tool_responses = []
-
-            # Adiciona a resposta com as chamadas de função ao histórico
-            messages.append(response.candidates[0].content)
 
             for call in response.function_calls:
                 tool_result = await execute_tool_call(call, telegram_chat_id)
@@ -258,22 +254,15 @@ COMO VOCÊ DEVE AGIR:
                     )
                 )
 
-            # Envia o resultado das tools de volta com role="tool"
-            messages.append(types.Content(role="tool", parts=tool_responses))
+            # Envia as respostas das tools de volta para a sessão do chat
+            response = await send_chat_message_with_retry(chat, tool_responses)
 
-            response = await generate_content_with_retry(
-                client=client,
-                model=GEMINI_MODEL,
-                contents=messages,
-                config=config,
-            )
-
-        return response.text or "Entendido! Processamento concluído."
+        return response.text or "Entendido! Compromisso anotado com sucesso."
 
     except Exception as e:
         logger.error(f"Erro no agente Liam: {e}", exc_info=True)
         err_msg = str(e)
-        if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg.lower():
+        if any(k in err_msg.lower() for k in ["503", "unavailable", "high demand"]):
             return "Os servidores da Google estão com alta demanda temporária neste instante. Por favor, tente enviar sua mensagem novamente em alguns segundos! 😊"
         return f"Desculpe, tive um imprevisto ao processar: {str(e)}"
 

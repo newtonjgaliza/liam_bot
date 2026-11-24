@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 async def tool_agendar_consulta(
-    medico: str,
-    data: str,
+    medico: Optional[str] = None,
+    data: str = "",
     paciente: Optional[str] = None,
     horario: Optional[str] = None,
     especialidade: Optional[str] = None,
@@ -25,12 +25,12 @@ async def tool_agendar_consulta(
     telegram_chat_id: int = 0,
 ) -> Dict[str, Any]:
     """
-    Agenda uma nova consulta médica no banco de dados e ativa os lembretes automáticos.
-    :param medico: Nome do médico ou profissional (ex: Dra. Flávia)
+    Agenda uma nova consulta médica ou exame no banco de dados e ativa os lembretes automáticos.
+    :param medico: Nome do médico, clínica ou tipo de exame
     :param data: Data no formato YYYY-MM-DD
     :param paciente: Nome do paciente (se não informado, assume Geral)
     :param horario: Horário no formato HH:MM (opcional)
-    :param especialidade: Especialidade médica (ex: Cardiologia, Dermatologia)
+    :param especialidade: Especialidade médica ou tipo de procedimento (ex: Exame de esteira)
     :param local: Endereço, clínica ou hospital
     :param observacoes: Observações ou preparos
     """
@@ -46,10 +46,12 @@ async def tool_agendar_consulta(
         except Exception:
             pass
 
+    nome_profissional = medico or especialidade or "Exame/Consulta"
+
     async with AsyncSessionLocal() as session:
         apt = Appointment(
             patient_name=paciente or "Geral",
-            doctor_name=medico,
+            doctor_name=nome_profissional,
             specialty=especialidade,
             appointment_date=parsed_date,
             appointment_time=parsed_time,
