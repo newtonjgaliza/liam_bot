@@ -41,13 +41,7 @@ O **Liam** é um assistente inteligente no Telegram construído para ajudar voc�
 ### 1. Configurar as variáveis de ambiente
 Edite o arquivo `.env` gerado na raiz:
 
-```env
-TELEGRAM_BOT_TOKEN=9224474540:AAFpGj8sBzPUTShYXMOSnu9Bg03TzFR2UUs
-GEMINI_API_KEY=sua_chave_do_google_ai_studio
-ALLOWED_TELEGRAM_IDS=seu_id_do_telegram,id_da_sua_esposa
-TIMEZONE=America/Sao_Paulo
-PORT=8080
-```
+
 
 > **Dica:** Para pegar seu ID do Telegram, envie uma mensagem para o bot [@userinfobot](https://t.me/userinfobot). Se deixar `ALLOWED_TELEGRAM_IDS` em branco, qualquer pessoa que mandar `/start` poderá falar com ele.
 
