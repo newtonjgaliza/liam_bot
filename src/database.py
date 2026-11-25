@@ -90,7 +90,12 @@ class Medication(Base):
 
 
 # Inicialização assíncrona do Engine
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine_kwargs = {"echo": False}
+if "postgresql+asyncpg" in DATABASE_URL:
+    # Compatibilidade com pooling do Supabase (Supavisor / PgBouncer)
+    engine_kwargs["connect_args"] = {"statement_cache_size": 0}
+
+engine = create_async_engine(DATABASE_URL, **engine_kwargs)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

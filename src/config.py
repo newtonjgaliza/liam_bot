@@ -38,6 +38,19 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR = BASE_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", f"sqlite+aiosqlite:///{DATA_DIR / 'liam.db'}"
-)
+_raw_db_url = os.getenv("DATABASE_URL", "").strip().strip('"').strip("'")
+if not _raw_db_url:
+    DATABASE_URL = f"sqlite+aiosqlite:///{DATA_DIR / 'liam.db'}"
+else:
+    # Remove parâmetros específicos do Prisma (ex: ?pgbouncer=true) incompatíveis com asyncpg
+    _raw_db_url = _raw_db_url.replace("?pgbouncer=true", "").replace("&pgbouncer=true", "")
+    if _raw_db_url.endswith("?"):
+        _raw_db_url = _raw_db_url[:-1]
+
+    # Normaliza URLs do Postgres (ex: Supabase fornece postgres:// ou postgresql://)
+    if _raw_db_url.startswith("postgres://"):
+        DATABASE_URL = _raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif _raw_db_url.startswith("postgresql://") and not _raw_db_url.startswith("postgresql+"):
+        DATABASE_URL = _raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    else:
+        DATABASE_URL = _raw_db_url
