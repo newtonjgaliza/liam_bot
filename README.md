@@ -84,12 +84,7 @@ A Render aceita repositórios Docker diretamente:
    - **Instance Type:** Free (ou Starter).
 
 3. **Configure as Variáveis de Ambiente no painel da Render:**
-   - Na aba **Environment Variables**, adicione:
-     - `TELEGRAM_BOT_TOKEN` = `9224474540:AAFpGj8sBzPUTShYXMOSnu9Bg03TzFR2UUs`
-     - `GEMINI_API_KEY` = *Sua chave da API do Gemini*
-     - `ALLOWED_TELEGRAM_IDS` = *Seu ID e o da sua esposa*
-     - `TIMEZONE` = `America/Sao_Paulo`
-     - `PORT` = `8080`
+  
 
 4. **Deploy:**
    - Clique em **Create Web Service**. A Render vai construir a imagem Docker e o servidor de *healthcheck* na porta `8080` garantirá que o serviço seja marcado como saudável (*healthy*) e fique rodando!
