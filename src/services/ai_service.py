@@ -9,6 +9,13 @@ from src.services.tools import (
     tool_listar_consultas,
     tool_buscar_historico_medico,
     tool_cancelar_consulta,
+    tool_consultar_restricoes_alimentares,
+    tool_atualizar_restricoes_alimentares,
+    tool_verificar_compatibilidade_alimento,
+)
+from src.database import (
+    get_dietary_profile,
+    add_food_check,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,6 +91,43 @@ LIAM_TOOLS = [
                     required=["id_consulta"],
                 ),
             ),
+            types.FunctionDeclaration(
+                name="consultar_restricoes_alimentares",
+                description="Consulta o perfil alimentar, alimentos proibidos, moderados e permitidos de Newton ou Janaína.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "paciente": types.Schema(type=types.Type.STRING, description="Nome da pessoa ('Newton' ou 'Janaína'). Se não informado, busca de ambos."),
+                    },
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="atualizar_restricoes_alimentares",
+                description="Atualiza ou adiciona restrições alimentares para Newton ou Janaína.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "paciente": types.Schema(type=types.Type.STRING, description="Nome da pessoa ('Newton' ou 'Janaína')"),
+                        "proibidos": types.Schema(type=types.Type.STRING, description="Alimentos proibidos (ex: glúten, lactose, frutos do mar)"),
+                        "restritos": types.Schema(type=types.Type.STRING, description="Alimentos restritos ou com limites de porção (ex: alho, cebola, feijão)"),
+                        "permitidos": types.Schema(type=types.Type.STRING, description="Alimentos liberados e substitutos seguros"),
+                        "observacoes": types.Schema(type=types.Type.STRING, description="Metas ou orientações nutricionais"),
+                    },
+                    required=["paciente"],
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="verificar_compatibilidade_alimento",
+                description="Verifica se um prato, alimento, ingrediente ou receita é permitido para Newton ou Janaína.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "alimento": types.Schema(type=types.Type.STRING, description="Nome do alimento, receita ou lista de ingredientes"),
+                        "paciente": types.Schema(type=types.Type.STRING, description="Para quem é o alimento ('Newton' ou 'Janaína')"),
+                    },
+                    required=["alimento"],
+                ),
+            ),
         ]
     )
 ]
@@ -125,6 +169,23 @@ async def execute_tool_call(call: Any, telegram_chat_id: int) -> Dict[str, Any]:
     elif fn_name == "cancelar_consulta":
         return await tool_cancelar_consulta(
             id_consulta=int(fn_args.get("id_consulta"))
+        )
+    elif fn_name == "consultar_restricoes_alimentares":
+        return await tool_consultar_restricoes_alimentares(
+            paciente=fn_args.get("paciente")
+        )
+    elif fn_name == "atualizar_restricoes_alimentares":
+        return await tool_atualizar_restricoes_alimentares(
+            paciente=fn_args.get("paciente", "Newton"),
+            proibidos=fn_args.get("proibidos"),
+            restritos=fn_args.get("restritos"),
+            permitidos=fn_args.get("permitidos"),
+            observacoes=fn_args.get("observacoes"),
+        )
+    elif fn_name == "verificar_compatibilidade_alimento":
+        return await tool_verificar_compatibilidade_alimento(
+            alimento=fn_args.get("alimento", ""),
+            paciente=fn_args.get("paciente"),
         )
 
     return {"erro": f"Ferramenta {fn_name} não encontrada."}
@@ -201,8 +262,8 @@ async def chat_with_agent(
         )
 
     system_instruction = f"""
-Você é o Liam, o assistente médico e de saúde pessoal de um casal carinhoso.
-Você tem acesso a FERRAMENTAS (Tools) para gerenciar consultas, exames e consultar o histórico de receitas e dietas.
+Você é o Liam, o assistente médico e de saúde pessoal de um casal carinhoso (Newton e Janaína).
+Você tem acesso a FERRAMENTAS (Tools) para gerenciar consultas, exames, consultar o histórico de receitas e gerenciar o perfil de RESTRIÇÕES ALIMENTARES da família.
 
 Informações temporais de referência:
 - Data atual: {current_date_str}
@@ -211,13 +272,23 @@ Informações temporais de referência:
 - Usuário que está falando agora: {user_name}
 
 COMO VOCÊ DEVE AGIR:
-1. Sempre que o usuário mencionar uma consulta ou exame (marcar, agendar, avisar que tem compromisso dia X ou amanhã), use a tool `agendar_consulta`.
+1. CONSULTAS E EXAMES:
+   - Sempre que o usuário mencionar uma consulta ou exame (marcar, agendar, avisar que tem compromisso dia X ou amanhã), use a tool `agendar_consulta`.
    - Se o usuário disser "amanhã", calcule a data de amanhã a partir da data atual ({current_date_str}).
    - Se o usuário disser apenas o dia e o mês (ex: "dia 12 de dezembro"), deduza o ano correto considerando o momento atual ({current_year} ou próximo ano se o mês já passou).
    - Se não houver nome de médico (como em exames laboratoriais, de imagem ou esteira), use o nome do exame ou da clínica.
    - Sempre avise que os lembretes automáticos estão ativados (na véspera, no dia pela manhã e 2h antes).
-2. Sempre que perguntarem sobre remédios, receitas passadas, dietas ou recomendações médicas (ex: "quais remédios dra flavia passou", "o que a nutricionista disse"), use a tool `buscar_historico_medico`.
-3. Sempre que perguntarem sobre compromissos ou consultas futuras ("quando é minha consulta", "quais consultas temos esse mês"), use a tool `listar_consultas`.
+   - Sempre que perguntarem sobre compromissos ou consultas futuras ("quando é minha consulta", "quais consultas temos esse mês"), use a tool `listar_consultas`.
+2. RECEITAS E HISTÓRICO MÉDICO:
+   - Sempre que perguntarem sobre remédios, receitas passadas, dosagens ou recomendações médicas passadas (ex: "quais remédios dra flavia passou"), use a tool `buscar_historico_medico`.
+3. RESTRIÇÕES ALIMENTARES E DIETA:
+   - Newton tem restrições alimentares estritas:
+     * Glúten 100% PROIBIDO (sem glúten absoluto: trigo, centeio, cevada, aveia convencional, malte, etc.).
+     * Lactose PROIBIDA (apenas sem lactose ou leites vegetais de aveia sem glúten).
+     * Quantidades controladas / moderadas: feijão (80g), cebola roxa (30g refogada), alho (1 dente por panela), beterraba (60g), café (2 xícaras/dia), molho de tomate (60g).
+   - Janaína tem seu perfil alimentar próprio no sistema.
+   - Sempre que perguntarem se Newton ou Janaína podem comer um alimento, ingrediente ou receita ("eu posso comer isso?", "janaina pode comer isso?", "o que eu posso comer?"), use `verificar_compatibilidade_alimento` ou `consultar_restricoes_alimentares`.
+   - Sempre que pedirem para alterar ou registrar uma nova restrição da Janaína ou do Newton, use `atualizar_restricoes_alimentares`.
 4. Seja sempre atencioso, empático, claro e fale em português com formatação limpa (use negrito e emojis quando apropriado).
 """
 
@@ -365,3 +436,239 @@ Extraia as seguintes informações e retorne SEMPRE em formato JSON estrito:
             "summary": f"Não consegui ler todos os detalhes do arquivo automaticamente. Erro: {str(e)}",
             "medications": []
         }
+
+
+# ==============================================================
+# ANÁLISE MULTIMODAL DE INGREDIENTES E RÓTULOS (VISÃO COMPUTACIONAL)
+# ==============================================================
+
+def resolve_target_patient(caption: str, user_name: str) -> str:
+    """
+    Identifica de forma inteligente para quem é a pergunta (Newton ou Janaína),
+    analisando menções na legenda ou o remetente da mensagem.
+    """
+    cap = (caption or "").lower().strip()
+    u_name = (user_name or "").lower()
+
+    # 1. Menção explícita a Janaína
+    if any(k in cap for k in ["janaina", "janaína", "jana", "esposa", "mulher", "ela"]):
+        return "Janaína"
+
+    # 2. Menção explícita a Newton
+    if any(k in cap for k in ["newton", "marido", "ele"]):
+        return "Newton"
+
+    # 3. Perguntas em 1ª pessoa ("eu posso comer", "pra mim", "minha dieta")
+    if any(k in cap for k in ["eu posso", "posso comer", "posso tomar", "pra mim", "minha dieta", "eu consigo"]):
+        if "jana" in u_name:
+            return "Janaína"
+        return "Newton"
+
+    # 4. Se quem mandou a mensagem for Janaína
+    if "jana" in u_name:
+        return "Janaína"
+
+    # Padrão: Newton
+    return "Newton"
+
+
+def is_food_check_intent(caption: str) -> bool:
+    """Verifica se a legenda enviada com a foto indica intenção de checar alimento/rótulo."""
+    if not caption:
+        return False
+    cap = caption.lower()
+    keywords = [
+        "comer", "posso", "pode", "ingrediente", "ingredientes",
+        "rótulo", "rotulo", "alimento", "alimentos", "comida",
+        "dieta", "lanche", "snack", "tabela", "caloria",
+        "gluten", "glúten", "lactose", "doce", "bebida",
+        "produto", "supermercado", "almoço", "jantar", "café",
+        "tomar", "beber", "comprar", "levar", "guloseima",
+        "salgado", "sobremesa", "biscoito", "bolacha", "molho"
+    ]
+    return any(k in cap for k in keywords)
+
+
+async def analyze_food_photo(
+    file_bytes: bytes,
+    mime_type: str,
+    target_person: str,
+    user_caption: str = "",
+    user_name: str = "Usuário",
+    telegram_chat_id: int = 0,
+) -> Dict[str, Any]:
+    """
+    Analisa a foto de uma embalagem/rótulo de alimento e lista de ingredientes
+    confrontando minuciosamente com o perfil alimentar da pessoa (Newton ou Janaína).
+    """
+    client = get_gemini_client()
+    profile = await get_dietary_profile(target_person)
+
+    prohibited_info = profile.prohibited_items if profile else "Glúten e lactose proibidos."
+    restricted_info = profile.restricted_items if profile else "Alho e cebola moderados."
+    allowed_info = profile.allowed_items if profile else "Alimentos sem glúten e sem lactose."
+    notes_info = profile.notes if profile else ""
+
+    if not client:
+        return {
+            "is_food_label": True,
+            "product_name": "Alimento da Foto",
+            "target_person": target_person,
+            "status": "ATENCAO",
+            "headline": "⚠️ GEMINI NÃO CONFIGURADO",
+            "prohibited_found": [],
+            "restricted_found": [],
+            "safe_ingredients": [],
+            "allergens_warning": "",
+            "verdict_explanation": "A chave GEMINI_API_KEY precisa estar configurada no arquivo .env para análise de visão.",
+            "recommendation": "Configure a chave de API para habilitar a análise de ingredientes."
+        }
+
+    prompt = f"""
+Você é o Liam, o assistente médico e nutricional especialista em visão computacional, leitura minuciosa de rótulos de alimentos e segurança alimentar.
+Você está prestando consultoria imediata para {target_person.upper()} no supermercado ou em casa.
+
+PERFIL ALIMENTAR E RESTRIÇÕES DE {target_person.upper()}:
+- 🚫 PROIBIÇÃO ABSOLUTA: {prohibited_info}
+- ⚠️ ATENÇÃO / CONSUMO EM QUANTIDADE CONTROLADA: {restricted_info}
+- 🟢 ALIMENTOS E TROCAS LIBERADAS: {allowed_info}
+- 📋 OBSERVAÇÕES E METAS: {notes_info}
+
+Legenda ou pergunta enviada pelo usuário: "{user_caption}"
+Usuário que enviou a foto: {user_name}
+
+DIRETRIZES DE LEITURA E ANÁLISE:
+1. Inspecione com máximo zoom e atenção o texto impresso no rótulo, especialmente a seção "Ingredientes:", tabela nutricional e alertas de "ALÉRGICOS:".
+2. Se a imagem NÃO for de um alimento, embalagem, lista de ingredientes ou produto comestível (por exemplo: for uma receita médica, pedido de exame laboratorial, caixa de medicamento farmacêutico):
+   Defina "is_food_label": false.
+3. Se FOR um alimento ou rótulo:
+   Defina "is_food_label": true.
+   Analise com rigor cada ingrediente identificado:
+   - GLÚTEN OCULTO: trigo, farinha de trigo, farelo de trigo, centeio, cevada, aveia convencional (sem selo sem glúten explícito), malte, extrato de malte, xarope de malte, aroma de malte, farinha de rosca, levedura de cerveja.
+   - LACTOSE / LEITE: leite integral/desnatado, leite em pó, soro de leite, soro de leite em pó, permeado de soro, caseína, caseinato, queijo com lactose, creme de leite comum, manteiga, gordura anidra de leite.
+   - CONDIMENTOS / RESTRIÇÕES FODMAP DE {target_person.upper()}: alho em pó, cebola em pó, excesso de feijão ou beterraba concentrados, caldos prontos.
+4. Classifique o status em:
+   - "LIBERADO": Não contém nenhum ingrediente proibido ou restrito. Totalmente seguro para {target_person}.
+   - "ATENCAO": Não contém proibidos absolutos, mas contém ingredientes que requerem moderação (ex: alho/cebola em pequenas doses, ou aviso de 'pode conter traços' de contaminação cruzada).
+   - "PROIBIDO": Contém ingredientes proibidos para {target_person} (ex: glúten ou lactose para o Newton).
+   - "NAO_IDENTIFICADO": A foto está muito borrada, cortada ou a lista de ingredientes não está legível.
+
+Retorne SEMPRE em formato JSON estrito:
+{{
+  "is_food_label": true,
+  "product_name": "Nome da marca/produto identificado ou 'Produto alimentício'",
+  "target_person": "{target_person}",
+  "status": "LIBERADO" | "ATENCAO" | "PROIBIDO" | "NAO_IDENTIFICADO",
+  "headline": "Frase de efeito curta para o veredito",
+  "prohibited_found": ["lista de ingredientes proibidos encontrados"],
+  "restricted_found": ["lista de ingredientes com limite ou atenção"],
+  "safe_ingredients": ["principais ingredientes seguros identificados"],
+  "allergens_warning": "Texto de alérgicos do rótulo se houver, ou vazio",
+  "verdict_explanation": "Explicação clínica, clara e acolhedora em português do porquê pode ou não pode comer",
+  "recommendation": "Orientação prática do que fazer (ex: Pode comer com tranquilidade! / Evite comprar este produto! / Coma no máximo 1 porção pequena)"
+}}
+"""
+
+    try:
+        part = types.Part.from_bytes(
+            data=file_bytes,
+            mime_type=mime_type,
+        )
+        response = await generate_content_with_retry(
+            client=client,
+            model=GEMINI_MODEL,
+            contents=[part, prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+            )
+        )
+        data = json.loads(response.text.strip())
+
+        # Registra a checagem no banco de dados se for alimento
+        if data.get("is_food_label", True):
+            try:
+                identified = ", ".join(data.get("prohibited_found", []) + data.get("restricted_found", []))
+                await add_food_check(
+                    patient_name=target_person,
+                    product_name=data.get("product_name", "Alimento"),
+                    status=data.get("status", "ATENCAO"),
+                    summary=data.get("verdict_explanation", ""),
+                    identified_ingredients=identified if identified else None,
+                    telegram_chat_id=telegram_chat_id,
+                )
+            except Exception as db_err:
+                logger.warning(f"Não foi possível salvar food_check no banco: {db_err}")
+
+        return data
+    except Exception as e:
+        logger.error(f"Erro ao analisar foto de alimento com Gemini: {e}")
+        return {
+            "is_food_label": True,
+            "product_name": "Alimento",
+            "target_person": target_person,
+            "status": "NAO_IDENTIFICADO",
+            "headline": "⚠️ DIFICULDADE NA LEITURA",
+            "prohibited_found": [],
+            "restricted_found": [],
+            "safe_ingredients": [],
+            "allergens_warning": "",
+            "verdict_explanation": f"Não consegui ler os ingredientes com clareza. Erro: {str(e)}",
+            "recommendation": "Tente tirar uma foto mais aproximada e focada na lista de ingredientes da embalagem."
+        }
+
+
+def format_food_analysis_telegram(data: Dict[str, Any], target_person: str) -> str:
+    """Formata o resultado da análise de ingredientes em uma mensagem bonita e clara para o Telegram."""
+    status = data.get("status", "ATENCAO")
+    product = data.get("product_name", "Alimento")
+    explanation = data.get("verdict_explanation", "")
+    prohibited = data.get("prohibited_found", [])
+    restricted = data.get("restricted_found", [])
+    recommendation = data.get("recommendation", "")
+    allergens = data.get("allergens_warning", "")
+
+    if status == "LIBERADO":
+        icon = "🟢"
+        header = f"{icon} *LIBERADO PARA {target_person.upper()}!*"
+    elif status == "PROIBIDO":
+        icon = "🔴"
+        header = f"{icon} *NÃO RECOMENDADO / PROIBIDO PARA {target_person.upper()}!*"
+    elif status == "ATENCAO":
+        icon = "🟡"
+        header = f"{icon} *ATENÇÃO À QUANTIDADE PARA {target_person.upper()}!*"
+    else:
+        icon = "⚠️"
+        header = f"{icon} *NÃO FOI POSSÍVEL CONFIRMAR OS INGREDIENTES*"
+
+    lines = [header, ""]
+    if product and product.lower() not in ["alimento", "produto alimentício", "produto"]:
+        lines.append(f"📦 *Produto:* {product}")
+    lines.append(f"👤 *Avaliado para:* {target_person}")
+    lines.append("")
+
+    if prohibited:
+        lines.append("🚫 *Ingredientes Proibidos Encontrados:*")
+        for item in prohibited:
+            lines.append(f"• *{item}*")
+        lines.append("")
+
+    if restricted:
+        lines.append("⚠️ *Ingredientes com Restrição de Dose / Moderação:*")
+        for item in restricted:
+            lines.append(f"• {item}")
+        lines.append("")
+
+    if explanation:
+        lines.append(f"📋 *Avaliação:* {explanation}")
+        lines.append("")
+
+    if recommendation:
+        lines.append(f"💡 *Orientação do Liam:* {recommendation}")
+        lines.append("")
+
+    if allergens:
+        lines.append(f"ℹ️ *Alerta de Alérgenos no Rótulo:* _{allergens}_")
+
+    return "\n".join(lines).strip()
+

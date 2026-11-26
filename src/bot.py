@@ -11,6 +11,7 @@ from src.handlers.start import (
     help_command,
     list_appointments_command,
     list_medications_command,
+    dietary_restrictions_command,
 )
 from src.handlers.documents import handle_document_or_photo
 from src.handlers.chat import handle_text_message
@@ -29,6 +30,8 @@ def create_bot_app() -> Application:
     app.add_handler(CommandHandler("ajuda", help_command))
     app.add_handler(CommandHandler("consultas", list_appointments_command))
     app.add_handler(CommandHandler("remedios", list_medications_command))
+    app.add_handler(CommandHandler("dieta", dietary_restrictions_command))
+    app.add_handler(CommandHandler("restricoes", dietary_restrictions_command))
 
     # Documentos e Fotos (PDFs, receitas, dietas, etc.)
     app.add_handler(

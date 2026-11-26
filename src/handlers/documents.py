@@ -5,7 +5,13 @@ from telegram import Update
 from telegram.ext import ContextTypes
 import pypdf
 from src.handlers.auth import check_auth
-from src.services.ai_service import process_medical_document
+from src.services.ai_service import (
+    process_medical_document,
+    analyze_food_photo,
+    resolve_target_patient,
+    is_food_check_intent,
+    format_food_analysis_telegram,
+)
 from src.database import add_document_with_medications, get_or_create_user
 from src.config import UPLOADS_DIR
 
@@ -91,6 +97,42 @@ async def handle_document_or_photo(update: Update, context: ContextTypes.DEFAULT
             local_path_str = str(local_path)
         except Exception:
             local_path_str = None
+
+        # Identifica se é verificação de ingredientes / rótulo alimentar
+        target_person = resolve_target_patient(caption, user.first_name)
+        has_food_intent = is_food_check_intent(caption)
+        is_image_file = mime_type.startswith("image/")
+
+        # Se houver intenção explícita na legenda OU se for uma foto/imagem enviada
+        if has_food_intent or is_image_file:
+            try:
+                await status_msg.edit_text(f"🔍 Liam está inspecionando os ingredientes para *{target_person}*...", parse_mode="Markdown")
+            except Exception:
+                await status_msg.edit_text(f"🔍 Liam está inspecionando os ingredientes para {target_person}...")
+
+            food_data = await analyze_food_photo(
+                file_bytes=bytes_data,
+                mime_type=mime_type,
+                target_person=target_person,
+                user_caption=caption,
+                user_name=user.first_name or "Usuário",
+                telegram_chat_id=message.chat_id,
+            )
+
+            # Se for de fato um alimento/rótulo ou se a legenda pediu explicitamente para checar
+            if food_data.get("is_food_label", True) or has_food_intent:
+                reply_text = format_food_analysis_telegram(food_data, target_person)
+                try:
+                    await status_msg.edit_text(reply_text, parse_mode="Markdown")
+                except Exception:
+                    await status_msg.edit_text(reply_text)
+                return
+
+            # Caso não seja alimento (ex: foto de receita médica sem legenda), continua o fluxo médico
+            try:
+                await status_msg.edit_text("📄 Foto médica/receita identificada! Liam está catalogando os detalhes...")
+            except Exception:
+                pass
 
         # Processa via IA Multimodal (Gemini lê tanto PDF nativo quanto fotos de caixas ou receitas)
         data = await process_medical_document(

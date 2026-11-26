@@ -6,6 +6,7 @@ from src.database import (
     get_or_create_user,
     get_upcoming_appointments,
     get_all_medications,
+    get_all_dietary_profiles,
 )
 from src.config import TIMEZONE
 
@@ -42,7 +43,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 *Comandos úteis:*\n"
         "/consultas - Ver próximas consultas agendadas\n"
         "/remedios - Ver medicamentos salvos no histórico\n"
-        "/ajuda - Relembrar o que posso fazer"
+        "/dieta - Ver restrições alimentares de Newton e Janaína\n"
+        "/ajuda - Relembrar o que posso fazer\n\n"
+        "🥗 *Analisar Rótulos e Ingredientes:*\n"
+        "• Tire uma foto dos ingredientes de qualquer alimento e me envie!\n"
+        "• Na legenda, você pode dizer:\n"
+        "  _\"eu posso comer isso?\"_ ou _\"janaina pode comer isso?\"_\n"
+        "  *(Eu analiso os ingredientes e respondo com o veredito instantâneo 🟢🟡🔴)*"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -116,3 +123,36 @@ async def list_medications_command(update: Update, context: ContextTypes.DEFAULT
         text += "\n"
 
     await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def dietary_restrictions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /dieta e /restricoes: Exibe o perfil alimentar e restrições de Newton e Janaína."""
+    if not check_auth(update):
+        return
+
+    profiles = await get_all_dietary_profiles()
+    if not profiles:
+        await update.message.reply_text("Nenhum perfil de dieta encontrado no momento.")
+        return
+
+    text = "🥗 *Perfis de Restrições Alimentares Cadastrados:*\n\n"
+    for p in profiles:
+        text += f"👤 *Paciente:* *{p.patient_name.upper()}*\n"
+        text += f"🚫 *Proibidos:* {p.prohibited_items}\n\n"
+        text += f"⚠️ *Atenção / Limite:* {p.restricted_items}\n\n"
+        text += f"🟢 *Permitidos:* {p.allowed_items}\n\n"
+        if p.notes:
+            text += f"🎯 *Metas & Obs:* _{p.notes}_\n\n"
+        text += "----------------------------------------\n\n"
+
+    text += (
+        "💡 *Como testar rótulos no mercado:*\n"
+        "Tire uma foto dos ingredientes de qualquer embalagem e mande para mim!\n"
+        "Na legenda, você pode colocar: _\"eu posso comer isso?\"_ ou _\"janaina pode comer isso?\"_."
+    )
+
+    try:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text(text)
+

@@ -8,6 +8,10 @@ from src.database import (
     Document,
     Medication,
     User,
+    DietaryProfile,
+    get_dietary_profile,
+    get_all_dietary_profiles,
+    save_or_update_dietary_profile,
 )
 from src.config import TIMEZONE
 
@@ -215,3 +219,97 @@ async def tool_cancelar_consulta(id_consulta: int) -> Dict[str, Any]:
             "status": "sucesso",
             "mensagem": f"Consulta com {medico} do dia {data_str} foi cancelada com sucesso!"
         }
+
+
+async def tool_consultar_restricoes_alimentares(
+    paciente: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Consulta o perfil alimentar e as restrições de uma pessoa (Newton ou Janaína).
+    :param paciente: Nome da pessoa (Newton, Janaína, Jana). Se omitido, retorna os perfis de ambos.
+    """
+    if paciente:
+        profile = await get_dietary_profile(paciente)
+        if not profile:
+            return {
+                "status": "aviso",
+                "mensagem": f"Não encontrei restrições alimentares específicas cadastradas para '{paciente}'."
+            }
+        return {
+            "paciente": profile.patient_name,
+            "proibidos": profile.prohibited_items,
+            "restritos_atencao": profile.restricted_items,
+            "permitidos": profile.allowed_items,
+            "metas_observacoes": profile.notes,
+            "ultima_atualizacao": profile.updated_at.strftime("%d/%m/%Y %H:%M") if profile.updated_at else "n/d",
+        }
+    else:
+        profiles = await get_all_dietary_profiles()
+        return {
+            "perfis": [
+                {
+                    "paciente": p.patient_name,
+                    "proibidos": p.prohibited_items,
+                    "restritos_atencao": p.restricted_items,
+                    "permitidos": p.allowed_items,
+                    "metas_observacoes": p.notes,
+                }
+                for p in profiles
+            ]
+        }
+
+
+async def tool_atualizar_restricoes_alimentares(
+    paciente: str,
+    proibidos: Optional[str] = None,
+    restritos: Optional[str] = None,
+    permitidos: Optional[str] = None,
+    observacoes: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Atualiza ou cadastra restrições alimentares para uma pessoa (Newton ou Janaína).
+    :param paciente: Nome da pessoa (Newton ou Janaína)
+    :param proibidos: Ingredientes expressamente proibidos (ex: glúten, lactose, frutos do mar)
+    :param restritos: Alimentos que exigem atenção ou porções limitadas (ex: alho, cebola, feijão)
+    :param permitidos: Alimentos liberados e substituições seguras
+    :param observacoes: Metas de saúde ou instruções do nutricionista
+    """
+    profile = await save_or_update_dietary_profile(
+        patient_name=paciente,
+        prohibited_items=proibidos,
+        restricted_items=restritos,
+        allowed_items=permitidos,
+        notes=observacoes,
+    )
+    return {
+        "status": "sucesso",
+        "mensagem": f"Perfil alimentar de {profile.patient_name} atualizado com sucesso!",
+        "paciente": profile.patient_name,
+        "proibidos": profile.prohibited_items,
+        "restritos": profile.restricted_items,
+    }
+
+
+async def tool_verificar_compatibilidade_alimento(
+    alimento: str,
+    paciente: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Verifica a compatibilidade de um alimento ou prato com as restrições alimentares de Newton ou Janaína.
+    :param alimento: Nome do alimento, prato, ingrediente ou receita a verificar
+    :param paciente: Para quem é o alimento ('Newton' ou 'Janaína')
+    """
+    target = paciente or "Newton"
+    profile = await get_dietary_profile(target)
+    if not profile:
+        profile = await get_dietary_profile("Newton")
+
+    return {
+        "paciente": profile.patient_name if profile else target,
+        "alimento_consultado": alimento,
+        "regras_proibidas": profile.prohibited_items if profile else "Sem dados",
+        "regras_restritas": profile.restricted_items if profile else "Sem dados",
+        "regras_permitidas": profile.allowed_items if profile else "Sem dados",
+        "observacoes": profile.notes if profile else "Sem dados",
+    }
+
