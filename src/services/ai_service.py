@@ -299,7 +299,7 @@ COMO VOCÊ DEVE AGIR:
         temperature=0.2,
     )
 
-    models_to_try = [GEMINI_MODEL, "gemini-3-flash-preview"]
+    models_to_try = [GEMINI_MODEL, "gemini-2.5-flash", "gemini-1.5-flash"]
     unique_models = list(dict.fromkeys(models_to_try))
     last_error = None
 

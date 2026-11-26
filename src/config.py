@@ -13,7 +13,7 @@ if not TELEGRAM_BOT_TOKEN:
     raise ValueError("A variável TELEGRAM_BOT_TOKEN não foi informada no arquivo .env!")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
 # Usuários autorizados (IDs numéricos do Telegram)
 _allowed_ids_raw = os.getenv("ALLOWED_TELEGRAM_IDS", "").strip()
