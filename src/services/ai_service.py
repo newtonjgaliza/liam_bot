@@ -199,26 +199,36 @@ async def generate_content_with_retry(
     max_retries: int = 3,
 ) -> Any:
     """
-    Executa a chamada assíncrona ao Gemini com retry automático em caso de 503 (sobrecarga temporária).
+    Executa a chamada assíncrona ao Gemini com retry automático e fallback para modelos estáveis.
     """
-    for attempt in range(max_retries):
-        try:
-            return await client.aio.models.generate_content(
-                model=model,
-                contents=contents,
-                config=config,
-            )
-        except Exception as e:
-            err_str = str(e).lower()
-            if any(k in err_str for k in ["503", "unavailable", "429", "resource_exhausted", "high demand"]):
-                wait_time = (attempt + 1) * 1.5
-                logger.warning(
-                    f"⚠️ Google API ocupada (503/429). Tentativa {attempt + 1}/{max_retries}. "
-                    f"Aguardando {wait_time}s..."
+    models_to_try = [model, "gemini-2.5-flash", "gemini-1.5-flash"]
+    unique_models = list(dict.fromkeys(models_to_try))
+    last_err = None
+
+    for m in unique_models:
+        for attempt in range(max_retries):
+            try:
+                return await client.aio.models.generate_content(
+                    model=m,
+                    contents=contents,
+                    config=config,
                 )
-                await asyncio.sleep(wait_time)
-                continue
-            raise e
+            except Exception as e:
+                last_err = e
+                err_str = str(e).lower()
+                if attempt < max_retries - 1 and any(k in err_str for k in ["503", "unavailable", "429", "resource_exhausted", "high demand"]):
+                    wait_time = (attempt + 1) * 1.5
+                    logger.warning(
+                        f"⚠️ Google API ocupada (503/429) no modelo {m}. Tentativa {attempt + 1}/{max_retries}. "
+                        f"Aguardando {wait_time}s..."
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                logger.warning(f"Falha no modelo {m}: {e}. Tentando alternativa estável...")
+                break
+
+    if last_err:
+        raise last_err
 
 
 async def send_chat_message_with_retry(chat, message: Any, max_retries: int = 3) -> Any:

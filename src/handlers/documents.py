@@ -98,13 +98,13 @@ async def handle_document_or_photo(update: Update, context: ContextTypes.DEFAULT
         except Exception:
             local_path_str = None
 
-        # Identifica se é verificação de ingredientes / rótulo alimentar
+        # Identifica se é verificação de ingredientes / rótulo alimentar de supermercado
         target_person = resolve_target_patient(caption, user.first_name)
         has_food_intent = is_food_check_intent(caption)
         is_image_file = mime_type.startswith("image/")
 
-        # Se houver intenção explícita na legenda OU se for uma foto/imagem enviada
-        if has_food_intent or is_image_file:
+        # A análise de rótulos/alimentos é EXCLUSIVA para fotos/imagens de produtos (não para PDFs, que são documentos estruturados)
+        if is_image_file and (has_food_intent or not caption):
             try:
                 await status_msg.edit_text(f"🔍 Liam está inspecionando os ingredientes para *{target_person}*...", parse_mode="Markdown")
             except Exception:
@@ -119,8 +119,8 @@ async def handle_document_or_photo(update: Update, context: ContextTypes.DEFAULT
                 telegram_chat_id=message.chat_id,
             )
 
-            # Se for de fato um alimento/rótulo ou se a legenda pediu explicitamente para checar
-            if food_data.get("is_food_label", True) or has_food_intent:
+            # Se for de fato um alimento/rótulo identificado na foto
+            if food_data.get("is_food_label", True):
                 reply_text = format_food_analysis_telegram(food_data, target_person)
                 try:
                     await status_msg.edit_text(reply_text, parse_mode="Markdown")
